@@ -17,8 +17,11 @@ fi
 # --- Commit signing safety net ---
 # The template configures signing from POSTHOG_GIT_SIGNING_KEY at boot, but its bootstrap can
 # race and leave the box unsigned. Reapply if that happened. No-op when the secret is unset.
-if [ -n "${POSTHOG_GIT_SIGNING_KEY:-}" ] && [ "$(git config --global --get commit.gpgsign || true)" != "true" ]; then
+if [ -n "${POSTHOG_GIT_SIGNING_KEY:-}" ]; then
+  mkdir -p "$HOME/.local/bin"
+  install -m 755 "$SCRIPT_DIR/ssh-sign.sh" "$HOME/.local/bin/devbox-ssh-sign"
   git config --global gpg.format ssh
+  git config --global gpg.ssh.program "$HOME/.local/bin/devbox-ssh-sign"
   git config --global user.signingkey "key::${POSTHOG_GIT_SIGNING_KEY#key::}"
   git config --global commit.gpgsign true
   git config --global tag.gpgsign true
@@ -31,6 +34,14 @@ ln -sfn "$SCRIPT_DIR/.vimrc" "$HOME/.vimrc"
 
 # --- Background work (logs in ~) ---
 nohup bash "$SCRIPT_DIR/bootstrap-billing.sh" >> "$HOME/.coder-dotfiles-billing.log" 2>&1 &
-nohup bash "$SCRIPT_DIR/install-codex.sh"     >> "$HOME/.coder-dotfiles-codex.log"   2>&1 &
+billing_pid=$!
+nohup bash "$SCRIPT_DIR/install-tools.sh"     >> "$HOME/.coder-dotfiles-tools.log"   2>&1 &
+tools_pid=$!
 
-echo "coder-dotfiles: install.sh done (billing -> ~/.coder-dotfiles-billing.log, codex -> ~/.coder-dotfiles-codex.log)"
+echo "coder-dotfiles: install.sh done (billing -> ~/.coder-dotfiles-billing.log, tools -> ~/.coder-dotfiles-tools.log)"
+if [ "${1:-}" = "--wait" ]; then
+  result=0
+  wait "$billing_pid" || result=1
+  wait "$tools_pid" || result=1
+  exit "$result"
+fi

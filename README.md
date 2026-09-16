@@ -60,7 +60,65 @@ Host coder.* *.coder coder.dev.posthog.dev
 
 Open `~/billing` in the remote environment. Normal `git commit` signs automatically, `git push` authenticates through `gh`, and `gh pr create` creates the PR. Git signs the commits, not the PR object. The signing public key must be registered with GitHub as a signing key and the commit email must be verified on that account.
 
-## Still manual on a new box
+## Codex MCPs across devboxes
+
+`install-tools.sh` runs `install-mcps.py` after installing Codex. It adds a managed
+block to `~/.codex/config.toml`, preserves other settings, and keeps an initial
+backup at `~/.codex/config.toml.before-coder-mcps`. Existing definitions with the
+same names outside the managed block cause an error instead of being overwritten.
+
+| MCP | Authentication on each box |
+| --- | --- |
+| GitHub | Existing `GH_TOKEN` Coder secret |
+| PostHog | `POSTHOG_API_KEY` Coder secret, using a personal key with the needed project access |
+| Slack | `SLACK_MCP_TOKEN` Coder secret from an approved Slack app with MCP access and the required user scopes |
+| Grafana | `GRAFANA_URL` and `GRAFANA_SERVICE_ACCOUNT_TOKEN` Coder secrets |
+| Granola | Browser OAuth through `codex mcp login granola` on each box |
+
+From the Mac's authenticated PostHog checkout, set missing secrets with the
+hidden interactive prompts:
+
+```bash
+hogli devbox:secret:set POSTHOG_API_KEY
+hogli devbox:secret:set SLACK_MCP_TOKEN
+hogli devbox:secret:set GRAFANA_URL
+hogli devbox:secret:set GRAFANA_SERVICE_ACCOUNT_TOKEN
+```
+
+These are per-user secrets. Restart your workspaces to inject them and run the
+updated dotfiles. Each box must be configured to use this repository. The setup
+does not modify other users' boxes or the shared Coder template. Restart the
+Codex/T3 session after configuration changes. To retry only MCP configuration:
+
+```bash
+python3 ~/.config/coderv2/dotfiles/install-mcps.py
+codex mcp list
+```
+
+Token-based servers stay disabled until their environment variables are present
+when the installer runs. Token values are never written into the generated
+config. The Codex host process must also inherit those variables at runtime.
+Granola is registered for OAuth; registration alone does not authenticate it.
+Do not distribute a shared copy of rotating OAuth refresh credentials to boxes.
+
+Grafana runs the official `grafana/mcp-grafana:latest` Docker image with
+`--disable-write`. Docker must be available and the configured Grafana URL must
+be reachable from the box. The first connection pulls the image. Use a Grafana
+API URL appropriate to the remote network; a browser URL behind interactive SSO
+may not work with a service-account token. No image is pulled by the installer.
+
+Slack's official MCP requires a registered app; an arbitrary Slack token is not
+enough. Granola MCP supports browser OAuth or enterprise-managed authorization,
+not API keys. Provisioning their definitions cannot bypass these requirements.
+
+Sources: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp),
+[PostHog MCP](https://posthog.com/docs/model-context-protocol),
+[GitHub Codex setup](https://github.com/github/github-mcp-server/blob/main/docs/installation-guides/install-codex.md),
+[Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/),
+[Granola MCP](https://docs.granola.ai/help-center/sharing/integrations/mcp),
+[Grafana MCP](https://github.com/grafana/mcp-grafana).
+
+## Other manual setup on a new box
 
 - `~/billing/.env` from the 1Password item "Local billing environment vars", then `source .env && ./billy migrate && ./billy start`
 - Codex auth ships as the `CODEX_AUTH_JSON` Coder file secret (lands at `~/.codex/auth.json`); check with `codex login status`

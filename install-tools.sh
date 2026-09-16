@@ -9,6 +9,7 @@ flock 9
 
 bash "$SCRIPT_DIR/install-node.sh"
 bash "$SCRIPT_DIR/install-codex.sh"
+python3 "$SCRIPT_DIR/install-mcps.py"
 
 # Use Anthropic's native installer, which also supports fresh machines.
 tmp=$(mktemp -d)

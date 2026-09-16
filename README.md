@@ -14,6 +14,7 @@ Registered once with `hogli devbox:setup --configure-dotfiles`. Borrows the bubb
 - Symlinks `.vimrc` to `~/.vimrc` (syntax highlighting on by default)
 - `bootstrap-billing.sh` (backgrounded): installs `uv`, clones `PostHog/billing` to `~/billing`, runs `uv sync --dev`, starts the `db` and `redis` containers from `docker-compose.dev.yml`
 - `install-tools.sh` (backgrounded and locked against concurrent runs): installs the latest Node 24 release, the latest Codex release from npm, and the latest native Claude Code release on every workspace start. Existing installations are updated too. Node downloads are checked against the official SHA-256 manifest.
+- `install-mcp.sh` (run by `install-tools.sh` once Claude is on PATH): registers the PostHog (`https://mcp.posthog.com/mcp`) and Grafana (`grafana/mcp-grafana` in Docker over stdio, pointed at `grafana.prod-us.posthog.dev`) MCP servers with Claude Code at user scope, so they show up in every project on the box. Credentials come from the same `POSTHOG_API_KEY`, `GRAFANA_URL` and `GRAFANA_SERVICE_ACCOUNT_TOKEN` secrets as the Codex setup and are re-applied on every start, so rotating a secret and restarting the box is enough. Grafana runs with `--disable-write`. Without the PostHog key the server is registered for OAuth and needs `claude mcp login posthog` once per box. The Grafana image is pulled up front, and `-t stdio` is passed explicitly: the image defaults to SSE on :8000, and either a cold pull or the wrong transport makes Claude give up after 30s.
 - `install-bubblewrap.sh` (backgrounded, passwordless sudo + apt): installs bubblewrap and activates its AppArmor profile so the Codex CLI sandbox works. Without it Codex warns on every run and falls back to a bundled bubblewrap; Ubuntu 24.04 ships neither the package nor an active profile. Skipped once `bwrap --dev-bind / / true` passes.
 
 Logs: `~/.coder-dotfiles-billing.log`, `~/.coder-dotfiles-tools.log`, `~/.coder-dotfiles-bubblewrap.log`. Tool installation runs in the background; on a fresh provision, wait for `tool setup complete` before connecting T3. A failed download is reported in the log and retried on the next start; rerun `bash ~/.config/coderv2/dotfiles/install-tools.sh` to retry immediately.
@@ -29,6 +30,7 @@ Logs: `~/.coder-dotfiles-billing.log`, `~/.coder-dotfiles-tools.log`, `~/.coder-
 | `~/.local/share/claude/versions` | Claude's native installations |
 | `~/.gitconfig` | GitHub HTTPS credential helper and automatic signing configuration |
 | `~/.codex/auth.json` | Codex login injected from the `CODEX_AUTH_JSON` Coder file secret |
+| `~/.claude.json` | Claude Code user config, including the MCP servers registered by `install-mcp.sh` (mode 600; holds copies of the MCP credentials) |
 | `~/billing` | Billing checkout and `.venv`; its `.env` is separate |
 | `~/posthog` | Template-provided PostHog checkout and Docker stack |
 
@@ -42,6 +44,10 @@ The shared `posthog-linux` template owns the base machine, code-server, AgentAPI
 | `POSTHOG_GIT_SIGNING_KEY` | env var | Public half of the Secretive signing key; pushed by `hogli devbox:setup --configure-git-signing` from `git config user.signingkey` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | env var | Claude Code auth; from `claude setup-token` via `hogli devbox:setup --configure-claude` |
 | `CODEX_AUTH_JSON` | `~/.codex/auth.json` | Codex ChatGPT login; a copy of the Mac's `~/.codex/auth.json` |
+| `POSTHOG_API_KEY` | env var (Codex); copied into `~/.claude.json` (Claude) | PostHog MCP auth for both agents; a personal API key created with the **MCP Server** preset (`phx_...`). Claude falls back to OAuth (`claude mcp login posthog` per box) when unset |
+| `GRAFANA_URL` | env var (Codex); copied into `~/.claude.json` (Claude) | Grafana instance for the MCP, e.g. `https://grafana.prod-us.posthog.dev/`. Required for Codex; Claude defaults to prod-us when unset |
+| `GRAFANA_SERVICE_ACCOUNT_TOKEN` | env var (Codex); copied into `~/.claude.json` (Claude) | Grafana MCP auth for both agents; a service account token (Administration → Service accounts; Viewer is enough, both agents run read-only) |
+| `SLACK_MCP_TOKEN` | env var | Slack MCP for Codex; from an approved Slack app with MCP access |
 
 This public repository contains no tokens or private keys.
 
@@ -60,9 +66,11 @@ Host coder.* *.coder coder.dev.posthog.dev
 
 Open `~/billing` in the remote environment. Normal `git commit` signs automatically, `git push` authenticates through `gh`, and `gh pr create` creates the PR. Git signs the commits, not the PR object. The signing public key must be registered with GitHub as a signing key and the commit email must be verified on that account.
 
-## Codex MCPs across devboxes
+## MCPs across devboxes (Codex and Claude)
 
-`install-tools.sh` runs `install-mcps.py` after installing Codex. It adds a managed
+Claude Code: `install-tools.sh` runs `install-mcp.sh` after installing Claude. It registers `posthog` and `grafana` at Claude's user scope (`~/.claude.json`) with `claude mcp add-json`, reading the same `POSTHOG_API_KEY`, `GRAFANA_URL` and `GRAFANA_SERVICE_ACCOUNT_TOKEN` secrets as below, and pre-pulls the Grafana image. Unlike the Codex block, Claude has no env-var indirection for HTTP headers, so the token values are copied into `~/.claude.json` (mode 600) and refreshed on every start. Retry by hand with `bash ~/.config/coderv2/dotfiles/install-mcp.sh && claude mcp list`.
+
+Codex: `install-tools.sh` runs `install-mcps.py` after installing Codex. It adds a managed
 block to `~/.codex/config.toml`, preserves other settings, and keeps an initial
 backup at `~/.codex/config.toml.before-coder-mcps`. Existing definitions with the
 same names outside the managed block cause an error instead of being overwritten.
@@ -122,6 +130,7 @@ Sources: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp),
 
 - `~/billing/.env` from the 1Password item "Local billing environment vars", then `source .env && ./billy migrate && ./billy start`
 - Codex auth ships as the `CODEX_AUTH_JSON` Coder file secret (lands at `~/.codex/auth.json`); check with `codex login status`
+- MCP servers for Codex and Claude come from the secrets in the section above; a box started before they existed shows Claude's `posthog` as needing auth (`claude mcp login posthog` works meanwhile) and `grafana` as connected but unauthenticated. Check with `codex mcp list` and `claude mcp list`.
 - Claude uses `CLAUDE_CODE_OAUTH_TOKEN`; GitHub uses `GH_TOKEN`. Renew expired credentials in Coder secrets (`hogli devbox:secret:set`), then restart the box: secrets only land at workspace start. Verify Claude with a real call (`claude -p "reply with exactly: ok"`), since a set env var proves nothing. The Codex file secret is reapplied on startup, so update it if you reauthenticate on the devbox.
 
 ## Verify a box in one shot
@@ -133,6 +142,7 @@ git config --global --get user.signingkey | cut -c1-40
 bwrap --dev-bind / / true && echo bwrap ok
 codex login status
 cd ~/billing && claude -p "reply with exactly: ok"
+claude mcp list
 tail -1 ~/.coder-dotfiles-tools.log ~/.coder-dotfiles-billing.log ~/.coder-dotfiles-bubblewrap.log'
 ```
 

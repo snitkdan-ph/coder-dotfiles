@@ -17,4 +17,5 @@ trap 'rm -rf "$tmp"' EXIT
 curl --fail --silent --show-error --location --retry 3 https://claude.ai/install.sh -o "$tmp/install-claude.sh"
 bash "$tmp/install-claude.sh" latest
 claude --version
+bash "$SCRIPT_DIR/install-mcp.sh"
 echo "coder-dotfiles: tool setup complete"

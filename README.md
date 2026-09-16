@@ -7,9 +7,9 @@ Registered once with `hogli devbox:setup --configure-dotfiles`. Borrows the bubb
 ## What it does
 
 - Registers `gh` as git's HTTPS credential helper so clone/fetch/push never prompt (uses the `GH_TOKEN` Coder secret)
-- Configures automatic SSH commit/tag signing from the public `POSTHOG_GIT_SIGNING_KEY` Coder secret. The private key never leaves the Mac: it lives in Secretive's Secure Enclave and reaches the box through SSH agent forwarding. `ssh-sign.sh` finds a live forwarded agent even if T3 retained a socket from an earlier connection.
+- Configures automatic SSH commit/tag signing from the public `POSTHOG_GIT_SIGNING_KEY` Coder secret. The private key never leaves the Mac: it lives in Secretive's Secure Enclave and reaches the box through SSH agent forwarding. `ssh-sign.sh` finds a live forwarded agent even if T3 retained a socket from an earlier connection. An allowed-signers file is written alongside so `git log --show-signature` verifies your own commits on the box.
 - Warns in the dotfiles log when the `CLAUDE_CODE_OAUTH_TOKEN` secret contains whitespace (a pasted token that wrapped once broke every Claude call), and has login shells export a stripped copy so Claude keeps working until the secret is fixed
-- Managed block in `~/.bash_aliases`: the token guard above, a Ghostty `TERM` fix, and the `gcmm` / `gpp` aliases
+- Managed block in `~/.bash_aliases` (rewritten every start): the token guard above, adoption of the newest live forwarded SSH agent socket when the shell has none (T3 Code's remote server and tmux spawn shells without `SSH_AUTH_SOCK`), a Ghostty `TERM` fix, and the `gcmm` / `gpp` aliases
 - Managed block in `~/.tmux.conf`: `mouse on` and a 50000-line scrollback, for agents that run inside tmux (a running tmux server needs `tmux source ~/.tmux.conf` once)
 - Symlinks `.vimrc` to `~/.vimrc` (syntax highlighting on by default)
 - `bootstrap-billing.sh` (backgrounded): installs `uv`, clones `PostHog/billing` to `~/billing`, runs `uv sync --dev`, starts the `db` and `redis` containers from `docker-compose.dev.yml`

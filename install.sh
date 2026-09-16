@@ -27,6 +27,10 @@ if [ -n "${POSTHOG_GIT_SIGNING_KEY:-}" ]; then
   git config --global user.signingkey "key::${POSTHOG_GIT_SIGNING_KEY#key::}"
   git config --global commit.gpgsign true
   git config --global tag.gpgsign true
+  # Verification needs an allowed-signers file; without it `git log --show-signature` reports N for our own commits.
+  mkdir -p "$HOME/.config/git"
+  printf '%s namespaces="git" %s\n' "$(git config --global --get user.email || echo daniel.s@posthog.com)" "${POSTHOG_GIT_SIGNING_KEY#key::}" > "$HOME/.config/git/allowed_signers"
+  git config --global gpg.ssh.allowedSignersFile "$HOME/.config/git/allowed_signers"
   echo "coder-dotfiles: reapplied git signing config"
 else
   echo "coder-dotfiles: POSTHOG_GIT_SIGNING_KEY secret unset; commits will not be signed"
@@ -42,12 +46,25 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ "$(printf %s "$CLAUDE_CODE_OAUTH_T
 fi
 
 # --- Shell (managed block in ~/.bash_aliases, which Ubuntu's ~/.bashrc sources) ---
-if ! grep -q '# >>> coder-dotfiles >>>' "$HOME/.bash_aliases" 2>/dev/null; then
-  cat >> "$HOME/.bash_aliases" <<'BLOCK'
+# Rewritten on every start so changes here reach existing boxes; anything outside the markers is kept.
+touch "$HOME/.bash_aliases"
+sed -i '/# >>> coder-dotfiles >>>/,/# <<< coder-dotfiles <<</d' "$HOME/.bash_aliases"
+cat >> "$HOME/.bash_aliases" <<'BLOCK'
 # >>> coder-dotfiles >>>
 # Strip stray whitespace from the Claude token secret (see install.sh "token hygiene").
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   export CLAUDE_CODE_OAUTH_TOKEN="$(printf %s "$CLAUDE_CODE_OAUTH_TOKEN" | tr -d '[:space:]')"
+fi
+# Shells spawned by T3 Code's remote server (and tmux) inherit no SSH_AUTH_SOCK even though the
+# SSH tunnel forwards the Mac's agent. Adopt the newest live forwarded socket so ssh-add, git over
+# SSH and signing all just work. devbox-ssh-sign does its own search, so signing never depended on this.
+if ! { [ -S "${SSH_AUTH_SOCK:-}" ] && SSH_AUTH_SOCK="$SSH_AUTH_SOCK" timeout 2 ssh-add -l >/dev/null 2>&1; }; then
+  for _sock in $(ls -t /tmp/auth-agent*/listener.sock /tmp/ssh-*/agent.* 2>/dev/null); do
+    if [ -O "$_sock" ] && SSH_AUTH_SOCK="$_sock" timeout 2 ssh-add -l >/dev/null 2>&1; then
+      export SSH_AUTH_SOCK="$_sock"; break
+    fi
+  done
+  unset _sock
 fi
 # Ghostty's TERM has no terminfo on the box, which breaks clear/less/vim.
 [ "${TERM:-}" = xterm-ghostty ] && export TERM=xterm-256color
@@ -55,7 +72,6 @@ alias gcmm='git checkout main'
 alias gpp='git pull'
 # <<< coder-dotfiles <<<
 BLOCK
-fi
 
 # --- tmux (managed block) ---
 # Agents run inside tmux to survive a laptop sleep; the defaults have no mouse scrolling and a 2000-line scrollback.

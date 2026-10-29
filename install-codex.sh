@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Resolve latest on every workspace start, including when a baked CLI already exists.
-# Authentication is supplied separately by the CODEX_AUTH_JSON Coder file secret.
+# Authentication is a per-box `codex login --device-auth`; a shared auth.json breaks once any machine refreshes it.
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 

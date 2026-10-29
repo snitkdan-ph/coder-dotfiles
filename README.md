@@ -29,7 +29,7 @@ Logs: `~/.coder-dotfiles-billing.log`, `~/.coder-dotfiles-tools.log`, `~/.coder-
 | `~/.local/opt/codex-cli` | npm-managed Codex installation |
 | `~/.local/share/claude/versions` | Claude's native installations |
 | `~/.gitconfig` | GitHub HTTPS credential helper and automatic signing configuration |
-| `~/.codex/auth.json` | Codex login injected from the `CODEX_AUTH_JSON` Coder file secret |
+| `~/.codex/auth.json` | This box's own Codex login, from `codex login --device-auth` |
 | `~/.claude.json` | Claude Code user config, including the MCP servers registered by `install-mcp.sh` (mode 600; holds copies of the MCP credentials) |
 | `~/billing` | Billing checkout and `.venv`; its `.env` is separate |
 | `~/posthog` | Template-provided PostHog checkout and Docker stack |
@@ -43,11 +43,12 @@ The shared `posthog-linux` template owns the base machine, code-server, AgentAPI
 | `GH_TOKEN` | env var | `gh` auth and HTTPS git pushes (`gh auth setup-git`) |
 | `POSTHOG_GIT_SIGNING_KEY` | env var | Public half of the Secretive signing key; pushed by `hogli devbox:setup --configure-git-signing` from `git config user.signingkey` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | env var | Claude Code auth; from `claude setup-token` via `hogli devbox:setup --configure-claude` |
-| `CODEX_AUTH_JSON` | `~/.codex/auth.json` | Codex ChatGPT login; a copy of the Mac's `~/.codex/auth.json` |
 | `POSTHOG_API_KEY` | env var (Codex); copied into `~/.claude.json` (Claude) | PostHog MCP auth for both agents; a personal API key created with the **MCP Server** preset (`phx_...`). Claude falls back to OAuth (`claude mcp login posthog` per box) when unset |
 | `GRAFANA_URL` | env var (Codex); copied into `~/.claude.json` (Claude) | Grafana instance for the MCP, e.g. `https://grafana.prod-us.posthog.dev/`. Required for Codex; Claude defaults to prod-us when unset |
 | `GRAFANA_SERVICE_ACCOUNT_TOKEN` | env var (Codex); copied into `~/.claude.json` (Claude) | Grafana MCP auth for both agents; a service account token (Administration → Service accounts; Viewer is enough, both agents run read-only) |
 | `SLACK_MCP_TOKEN` | env var | Slack MCP for Codex; from an approved Slack app with MCP access |
+
+Codex has no secret. Each box signs in once with `codex login --device-auth` (see below).
 
 This public repository contains no tokens or private keys.
 
@@ -129,9 +130,9 @@ Sources: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp),
 ## Other manual setup on a new box
 
 - `~/billing/.env` from the 1Password item "Local billing environment vars", then `source .env && ./billy migrate && ./billy start`
-- Codex auth ships as the `CODEX_AUTH_JSON` Coder file secret (lands at `~/.codex/auth.json`); check with `codex login status`
+- Codex: run `codex login --device-auth` once per box and approve the code at the URL it prints. Don't copy `auth.json` from the Mac or another box. Codex refresh tokens are single-use, so whichever machine refreshes first logs the others out (a 401 on every request). This is why the old `CODEX_AUTH_JSON` file secret is disabled. Check with a real call (`codex exec --skip-git-repo-check "reply with exactly: ok"`), since `codex login status` only checks that the file exists.
 - MCP servers for Codex and Claude come from the secrets in the section above; a box started before they existed shows Claude's `posthog` as needing auth (`claude mcp login posthog` works meanwhile) and `grafana` as connected but unauthenticated. Check with `codex mcp list` and `claude mcp list`.
-- Claude uses `CLAUDE_CODE_OAUTH_TOKEN`; GitHub uses `GH_TOKEN`. Renew expired credentials in Coder secrets (`hogli devbox:secret:set`), then restart the box: secrets only land at workspace start. Verify Claude with a real call (`claude -p "reply with exactly: ok"`), since a set env var proves nothing. The Codex file secret is reapplied on startup, so update it if you reauthenticate on the devbox.
+- Claude uses `CLAUDE_CODE_OAUTH_TOKEN`; GitHub uses `GH_TOKEN`. Renew expired credentials in Coder secrets (`hogli devbox:secret:set`), then restart the box: secrets only land at workspace start. Verify Claude with a real call (`claude -p "reply with exactly: ok"`), since a set env var proves nothing.
 
 ## Verify a box in one shot
 
@@ -140,7 +141,7 @@ hogli devbox:exec -n <label> -- bash -lc '
 gh api user --jq .login
 git config --global --get user.signingkey | cut -c1-40
 bwrap --dev-bind / / true && echo bwrap ok
-codex login status
+codex exec --skip-git-repo-check "reply with exactly: ok" 2>/dev/null
 cd ~/billing && claude -p "reply with exactly: ok"
 claude mcp list
 tail -1 ~/.coder-dotfiles-tools.log ~/.coder-dotfiles-billing.log ~/.coder-dotfiles-bubblewrap.log'

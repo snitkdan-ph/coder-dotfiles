@@ -5,12 +5,11 @@
 # Credentials arrive as Coder user secrets (env vars at workspace start), never from this repo:
 # Same secrets as the Codex setup in install-mcps.py, so each is set once:
 #   POSTHOG_API_KEY                personal API key, "MCP Server" preset (phx_...). Unset -> OAuth: `claude mcp login posthog` per box.
-#   GRAFANA_URL                    Grafana instance; defaults to prod-us when unset.
-#   GRAFANA_SERVICE_ACCOUNT_TOKEN  service account token for GRAFANA_URL. Unset -> registered, but every call is unauthenticated.
+#   GRAFANA_TOKEN_US, GRAFANA_TOKEN_EU  service account tokens for prod-us / prod-eu Grafana, reached over Tailscale.
+#                                       Written to ~/.config/grafana/token-<region>; unset -> an existing file is kept.
 set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
-GRAFANA_URL="${GRAFANA_URL:-https://grafana.prod-us.posthog.dev/}"
 GRAFANA_IMAGE="grafana/mcp-grafana"
 CLAUDE_CONFIG="$HOME/.claude.json"
 
@@ -44,16 +43,28 @@ else
   register posthog '{"type":"http","url":"https://mcp.posthog.com/mcp"}'
 fi
 
-# --- Grafana (official image over stdio) ---
-# The image's entrypoint defaults to SSE on :8000; without `-t stdio` Claude waits 30s and gives up.
-# Pull ahead of time for the same reason: a first-use pull also blows Claude's connection timeout.
+# --- Grafana (official image over stdio, via ~/.local/bin/mcp-grafana-tailscale) ---
+# The wrapper talks to http://grafana-prod-<region> over Tailscale. The public posthog.dev URLs are behind
+# Cognito and redirect every service-account request. Tokens live in files, not ~/.claude.json, so the
+# config holds no secrets and works when T3 starts Claude from systemd without the Coder env.
+# Pull ahead of time: a first-use pull blows Claude's 30s connection timeout.
 if docker pull -q "$GRAFANA_IMAGE" >/dev/null 2>&1; then
   echo "coder-dotfiles: $GRAFANA_IMAGE image ready"
 else
   echo "coder-dotfiles: $GRAFANA_IMAGE pull FAILED (first Grafana MCP connection may time out; retried next start)"
 fi
-[ -n "${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}" ] || echo "coder-dotfiles: GRAFANA_SERVICE_ACCOUNT_TOKEN secret unset; grafana MCP will not authenticate"
-register grafana "$(jq -cn --arg url "$GRAFANA_URL" --arg token "${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}" --arg image "$GRAFANA_IMAGE" \
-  '{type:"stdio", command:"docker",
-    args:["run","--rm","-i","-e","GRAFANA_URL","-e","GRAFANA_SERVICE_ACCOUNT_TOKEN",$image,"-t","stdio","--disable-write"],
-    env:({GRAFANA_URL:$url} + (if $token != "" then {GRAFANA_SERVICE_ACCOUNT_TOKEN:$token} else {} end))}')"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "$SCRIPT_DIR/mcp-grafana-tailscale.sh" "$HOME/.local/bin/mcp-grafana-tailscale"
+install -d -m 700 "$HOME/.config/grafana"
+for region in us eu; do
+  var="GRAFANA_TOKEN_${region^^}"
+  file="$HOME/.config/grafana/token-$region"
+  if [ -n "${!var:-}" ]; then
+    (umask 077; printf %s "${!var}" | tr -d '[:space:]' > "$file")
+  elif [ ! -s "$file" ]; then
+    echo "coder-dotfiles: $var secret unset and $file missing; grafana MCP ($region) will fail to start"
+  fi
+done
+register grafana "$(jq -cn --arg cmd "$HOME/.local/bin/mcp-grafana-tailscale" '{type:"stdio", command:$cmd, args:["us","--disable-write"], env:{}}')"
+register grafana-eu "$(jq -cn --arg cmd "$HOME/.local/bin/mcp-grafana-tailscale" '{type:"stdio", command:$cmd, args:["eu","--disable-write"], env:{}}')"

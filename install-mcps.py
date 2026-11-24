@@ -27,16 +27,19 @@ def configuration() -> str:
         if token:
             lines.append(f"bearer_token_env_var = {json.dumps(token)}")
         entries.append("\n".join(lines))
-    grafana_enabled = bool(os.environ.get("GRAFANA_URL") and os.environ.get("GRAFANA_SERVICE_ACCOUNT_TOKEN"))
-    entries.append("\n".join([
-        "[mcp_servers.grafana]",
-        'command = "docker"',
-        'args = ["run", "--rm", "-i", "--env", "GRAFANA_URL", "--env", '
-        '"GRAFANA_SERVICE_ACCOUNT_TOKEN", "grafana/mcp-grafana:latest", "-t", "stdio", "--disable-write"]',
-        'env_vars = ["GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN"]',
-        "startup_timeout_sec = 120",
-        f"enabled = {str(grafana_enabled).lower()}",
-    ]))
+    # Same wrapper and token files as the Claude setup in install-mcp.sh (Tailscale, not the Cognito URL).
+    wrapper = Path.home() / ".local/bin/mcp-grafana-tailscale"
+    for name, region in (("grafana", "us"), ("grafana-eu", "eu")):
+        # The token file is written later in install-tools.sh, so also accept the secret itself.
+        enabled = bool(os.environ.get(f"GRAFANA_TOKEN_{region.upper()}")) or (
+            Path.home() / ".config/grafana" / f"token-{region}").exists()
+        entries.append("\n".join([
+            f'[mcp_servers.{json.dumps(name)}]',
+            f"command = {json.dumps(str(wrapper))}",
+            f'args = ["{region}", "--disable-write"]',
+            "startup_timeout_sec = 120",
+            f"enabled = {str(enabled).lower()}",
+        ]))
     return "\n\n".join(entries)
 
 
@@ -74,7 +77,7 @@ def install(destination: Path) -> None:
             finally:
                 temporary.unlink(missing_ok=True)
         for name, settings in managed.items():
-            print(f"{name}: {'configured' if settings['enabled'] else 'disabled (missing environment credentials/URL)'}")
+            print(f"{name}: {'configured' if settings['enabled'] else 'disabled (missing credentials)'}")
         print("Granola needs OAuth on each box: codex mcp login granola")
 
 

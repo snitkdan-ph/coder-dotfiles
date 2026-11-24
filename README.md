@@ -14,7 +14,7 @@ Registered once with `hogli devbox:setup --configure-dotfiles`. Borrows the bubb
 - Symlinks `.vimrc` to `~/.vimrc` (syntax highlighting on by default)
 - `bootstrap-billing.sh` (backgrounded): installs `uv`, clones `PostHog/billing` to `~/billing`, runs `uv sync --dev`, starts the `db` and `redis` containers from `docker-compose.dev.yml`
 - `install-tools.sh` (backgrounded and locked against concurrent runs): installs the latest Node 24 release, the latest Codex release from npm, and the latest native Claude Code release on every workspace start. Existing installations are updated too. Node downloads are checked against the official SHA-256 manifest.
-- `install-mcp.sh` (run by `install-tools.sh` once Claude is on PATH): registers the PostHog (`https://mcp.posthog.com/mcp`) and Grafana (`grafana/mcp-grafana` in Docker over stdio, pointed at `grafana.prod-us.posthog.dev`) MCP servers with Claude Code at user scope, so they show up in every project on the box. Credentials come from the same `POSTHOG_API_KEY`, `GRAFANA_URL` and `GRAFANA_SERVICE_ACCOUNT_TOKEN` secrets as the Codex setup and are re-applied on every start, so rotating a secret and restarting the box is enough. Grafana runs with `--disable-write`. Without the PostHog key the server is registered for OAuth and needs `claude mcp login posthog` once per box. The Grafana image is pulled up front, and `-t stdio` is passed explicitly: the image defaults to SSE on :8000, and either a cold pull or the wrong transport makes Claude give up after 30s.
+- `install-mcp.sh` (run by `install-tools.sh` once Claude is on PATH): registers the PostHog (`https://mcp.posthog.com/mcp`) and Grafana MCP servers with Claude Code at user scope, so they show up in every project on the box. Grafana is two servers, `grafana` (prod-us) and `grafana-eu` (prod-eu), both run through `~/.local/bin/mcp-grafana-tailscale` (from `mcp-grafana-tailscale.sh`), which starts `grafana/mcp-grafana` in Docker against `http://grafana-prod-<region>` over Tailscale with `--disable-write`. Don't use `grafana.prod-<region>.posthog.dev`: it's behind Cognito and redirects every service-account request. The `GRAFANA_TOKEN_US`/`GRAFANA_TOKEN_EU` secrets are written to `~/.config/grafana/token-<region>` (mode 600) on every start, so rotating a secret and restarting the box is enough. Without the PostHog key the server is registered for OAuth and needs `claude mcp login posthog` once per box. The Grafana image is pulled up front, and `-t stdio` is passed explicitly: the image defaults to SSE on :8000, and either a cold pull or the wrong transport makes Claude give up after 30s.
 - `install-bubblewrap.sh` (backgrounded, passwordless sudo + apt): installs bubblewrap and activates its AppArmor profile so the Codex CLI sandbox works. Without it Codex warns on every run and falls back to a bundled bubblewrap; Ubuntu 24.04 ships neither the package nor an active profile. Skipped once `bwrap --dev-bind / / true` passes.
 
 Logs: `~/.coder-dotfiles-billing.log`, `~/.coder-dotfiles-tools.log`, `~/.coder-dotfiles-bubblewrap.log`. Tool installation runs in the background; on a fresh provision, wait for `tool setup complete` before connecting T3. A failed download is reported in the log and retried on the next start; rerun `bash ~/.config/coderv2/dotfiles/install-tools.sh` to retry immediately.
@@ -44,8 +44,7 @@ The shared `posthog-linux` template owns the base machine, code-server, AgentAPI
 | `POSTHOG_GIT_SIGNING_KEY` | env var | Public half of the Secretive signing key; pushed by `hogli devbox:setup --configure-git-signing` from `git config user.signingkey` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | env var | Claude Code auth; from `claude setup-token` via `hogli devbox:setup --configure-claude` |
 | `POSTHOG_API_KEY` | env var (Codex); copied into `~/.claude.json` (Claude) | PostHog MCP auth for both agents; a personal API key created with the **MCP Server** preset (`phx_...`). Claude falls back to OAuth (`claude mcp login posthog` per box) when unset |
-| `GRAFANA_URL` | env var (Codex); copied into `~/.claude.json` (Claude) | Grafana instance for the MCP, e.g. `https://grafana.prod-us.posthog.dev/`. Required for Codex; Claude defaults to prod-us when unset |
-| `GRAFANA_SERVICE_ACCOUNT_TOKEN` | env var (Codex); copied into `~/.claude.json` (Claude) | Grafana MCP auth for both agents; a service account token (Administration → Service accounts; Viewer is enough, both agents run read-only) |
+| `GRAFANA_TOKEN_US`, `GRAFANA_TOKEN_EU` | env var; written to `~/.config/grafana/token-<region>` | Grafana MCP auth for both agents (prod-us / prod-eu service account tokens; Viewer is enough, both run read-only). Set from the Mac Keychain: `security find-generic-password -s grafana-service-account-token-us -w > f && hogli devbox:secret:set GRAFANA_TOKEN_US --file f && rm f` |
 | `SLACK_MCP_TOKEN` | env var | Slack MCP for Codex; from an approved Slack app with MCP access |
 
 Codex has no secret. Each box signs in once with `codex login --device-auth` (see below).
@@ -69,7 +68,7 @@ Open `~/billing` in the remote environment. Normal `git commit` signs automatica
 
 ## MCPs across devboxes (Codex and Claude)
 
-Claude Code: `install-tools.sh` runs `install-mcp.sh` after installing Claude. It registers `posthog` and `grafana` at Claude's user scope (`~/.claude.json`) with `claude mcp add-json`, reading the same `POSTHOG_API_KEY`, `GRAFANA_URL` and `GRAFANA_SERVICE_ACCOUNT_TOKEN` secrets as below, and pre-pulls the Grafana image. Unlike the Codex block, Claude has no env-var indirection for HTTP headers, so the token values are copied into `~/.claude.json` (mode 600) and refreshed on every start. Retry by hand with `bash ~/.config/coderv2/dotfiles/install-mcp.sh && claude mcp list`.
+Claude Code: `install-tools.sh` runs `install-mcp.sh` after installing Claude. It registers `posthog`, `grafana` and `grafana-eu` at Claude's user scope (`~/.claude.json`) with `claude mcp add-json` and pre-pulls the Grafana image. Claude has no env-var indirection for HTTP headers, so the PostHog key is copied into `~/.claude.json` (mode 600). The Grafana entries hold no secrets; the wrapper reads the token files. Retry by hand with `bash ~/.config/coderv2/dotfiles/install-mcp.sh && claude mcp list`.
 
 Codex: `install-tools.sh` runs `install-mcps.py` after installing Codex. It adds a managed
 block to `~/.codex/config.toml`, preserves other settings, and keeps an initial
@@ -81,7 +80,7 @@ same names outside the managed block cause an error instead of being overwritten
 | GitHub | Existing `GH_TOKEN` Coder secret |
 | PostHog | `POSTHOG_API_KEY` Coder secret, using a personal key with the needed project access |
 | Slack | `SLACK_MCP_TOKEN` Coder secret from an approved Slack app with MCP access and the required user scopes |
-| Grafana | `GRAFANA_URL` and `GRAFANA_SERVICE_ACCOUNT_TOKEN` Coder secrets |
+| Grafana | `GRAFANA_TOKEN_US` and `GRAFANA_TOKEN_EU` Coder secrets (token files; the server is enabled once one exists) |
 | Granola | Browser OAuth through `codex mcp login granola` on each box |
 
 From the Mac's authenticated PostHog checkout, set missing secrets with the
@@ -90,8 +89,8 @@ hidden interactive prompts:
 ```bash
 hogli devbox:secret:set POSTHOG_API_KEY
 hogli devbox:secret:set SLACK_MCP_TOKEN
-hogli devbox:secret:set GRAFANA_URL
-hogli devbox:secret:set GRAFANA_SERVICE_ACCOUNT_TOKEN
+hogli devbox:secret:set GRAFANA_TOKEN_US
+hogli devbox:secret:set GRAFANA_TOKEN_EU
 ```
 
 These are per-user secrets. Restart your workspaces to inject them and run the
@@ -111,10 +110,9 @@ Granola is registered for OAuth; registration alone does not authenticate it.
 Do not distribute a shared copy of rotating OAuth refresh credentials to boxes.
 
 Grafana runs the official `grafana/mcp-grafana:latest` Docker image with
-`--disable-write`. Docker must be available and the configured Grafana URL must
-be reachable from the box. The first connection pulls the image. Use a Grafana
-API URL appropriate to the remote network; a browser URL behind interactive SSO
-may not work with a service-account token. No image is pulled by the installer.
+`--disable-write` through the same `mcp-grafana-tailscale` wrapper as Claude
+(`grafana` for prod-us, `grafana-eu` for prod-eu). Docker and Tailscale must be
+up on the box; the Claude installer pre-pulls the image.
 
 Slack's official MCP requires a registered app; an arbitrary Slack token is not
 enough. Granola MCP supports browser OAuth or enterprise-managed authorization,
@@ -131,7 +129,7 @@ Sources: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp),
 
 - `~/billing/.env` from the 1Password item "Local billing environment vars", then `source .env && ./billy migrate && ./billy start`
 - Codex: run `codex login --device-auth` once per box and approve the code at the URL it prints. Don't copy `auth.json` from the Mac or another box. Codex refresh tokens are single-use, so whichever machine refreshes first logs the others out (a 401 on every request). This is why the old `CODEX_AUTH_JSON` file secret is disabled. Check with a real call (`codex exec --skip-git-repo-check "reply with exactly: ok"`), since `codex login status` only checks that the file exists.
-- MCP servers for Codex and Claude come from the secrets in the section above; a box started before they existed shows Claude's `posthog` as needing auth (`claude mcp login posthog` works meanwhile) and `grafana` as connected but unauthenticated. Check with `codex mcp list` and `claude mcp list`.
+- MCP servers for Codex and Claude come from the secrets in the section above; a box started before they existed shows Claude's `posthog` as needing auth (`claude mcp login posthog` works meanwhile) and `grafana` failing to start (missing token file). Check with `codex mcp list` and `claude mcp list`.
 - Claude uses `CLAUDE_CODE_OAUTH_TOKEN`; GitHub uses `GH_TOKEN`. Renew expired credentials in Coder secrets (`hogli devbox:secret:set`), then restart the box: secrets only land at workspace start. Verify Claude with a real call (`claude -p "reply with exactly: ok"`), since a set env var proves nothing.
 
 ## Verify a box in one shot
